@@ -1,0 +1,186 @@
+//@version=5
+indicator("Auto Fib Extension", overlay=true)
+
+depthTooltip = "The minimum number of bars that will be taken into account when calculating the indicator."
+depth = input.int(title="Depth", defval=10, minval=2, inline = "Pivots", tooltip=depthTooltip)
+reverse = input(false, "Reverse")
+var extendLeft = input(false, "Extend Left    |    Extend Right", inline = "Extend Lines")
+var extendRight = input(true, "", inline = "Extend Lines")
+var extending = extend.none
+if extendLeft and extendRight
+    extending := extend.both
+if extendLeft and not extendRight
+    extending := extend.left
+if not extendLeft and extendRight
+    extending := extend.right
+prices = input(true, "Show Prices")
+levels = input(true, "Show Levels", inline = "Levels")
+levelsFormat = input.string("Values", "", options = ["Values", "Percent"], inline = "Levels")
+labelsPosition = input.string("Left", "Labels Position", options = ["Left", "Right"])
+backgroundTransparency = input.int(85, "Background Transparency", minval = 0, maxval = 100)
+
+upperThreshold = 0.236
+lowerThreshold = 1.0
+
+import TradingView/ZigZag/6 as zigzag
+
+pivots(src, length, isHigh) =>
+    if bar_index >= length
+        price = nz(src[length])
+        found = true
+        for i = 0 to length * 2
+            if (isHigh and src[i] > price) or (not isHigh and src[i] < price)
+                found := false
+                break
+        if found
+            zigzag.Point.new(time[length], price)
+
+update()=>
+    var line lineLastHL = na
+    var line lineLastLH = na
+    var line lineLast = na
+
+    var zigzag.Point[] pivotsH = array.new<zigzag.Point>()
+    var zigzag.Point lastH = na
+    var zigzag.Point[] pivotsL = array.new<zigzag.Point>()
+    var zigzag.Point lastL = na
+
+    var isHighLast = false
+    var float startPrice = na
+    var float endPrice = na
+
+    H = pivots(high, depth / 2, true)
+    L = pivots(low, depth / 2, false)
+
+    countPivotsH = array.size(pivotsH)
+    countPivotsL = array.size(pivotsL)
+
+    if countPivotsH > 0 and countPivotsL > 0
+        lastH := array.get(pivotsH, countPivotsH-1)
+        lastL := array.get(pivotsL, countPivotsL-1)
+        isHighLast := lastH.tm > lastL.tm
+        if isHighLast
+            if not na(H)
+                if H.price > lastH.price
+                    array.set(pivotsH, countPivotsH-1, H)
+                H := na
+        else
+            if not na(L)
+                if L.price < lastL.price
+                    array.set(pivotsL, countPivotsL-1, L)
+                L := na
+
+    if not na(H)
+        array.push(pivotsH, H)
+
+    if not na(L)
+        array.push(pivotsL, L)
+
+    if barstate.islast and array.size(pivotsH) > 0 and array.size(pivotsL) > 0
+        pivotsHCopy = array.copy(pivotsH)
+        pivotsLCopy = array.copy(pivotsL)
+        while array.size(pivotsHCopy) > 0 and array.size(pivotsLCopy) > 0
+            lastH := array.pop(pivotsHCopy)
+            lastL := array.pop(pivotsLCopy)
+
+            isHighLast := lastH.tm > lastL.tm
+            pivots = isHighLast ? pivotsHCopy : pivotsLCopy
+
+            for i = array.size(pivots)-1 to 0
+                if i < 0
+                    break
+                p = array.get(pivots, i)
+                if p.tm < lastL.tm
+                    break
+                betterPrice = isHighLast ? p.price > lastH.price : p.price < lastL.price
+                if p.price > lastH.price
+                    lastH := array.pop(pivots)
+                else
+                    array.remove(pivots, i)
+
+            if array.size(pivotsHCopy) == 0 or array.size(pivotsLCopy) == 0
+                break
+
+            isHighLast := lastH.tm > lastL.tm
+            pivots := isHighLast ? pivotsHCopy : pivotsLCopy
+
+            prevPivot = array.get(pivots, array.size(pivots)-1)
+            startPrice := prevPivot.price
+
+            if isHighLast
+                endPrice := lastL.price
+                diff = math.abs(startPrice - endPrice)
+                if lastH.price > endPrice + diff * lowerThreshold or lastH.price < endPrice + diff * upperThreshold
+                    array.push(pivotsLCopy, lastL)
+                    continue
+                line.delete(lineLastHL)
+                line.delete(lineLastLH)
+                lineLastHL := line.new(prevPivot.tm, prevPivot.price, lastL.tm, lastL.price, color=color.red, width=1, style=line.style_dashed, xloc = xloc.bar_time)
+                lineLastLH := line.new(lastL.tm, lastL.price, lastH.tm, lastH.price, color=color.green, width=1, style=line.style_dashed, xloc = xloc.bar_time)
+                lineLast := lineLastLH
+            else
+                endPrice := lastH.price
+                diff = math.abs(startPrice - endPrice)
+                if lastL.price < endPrice - diff * lowerThreshold or lastL.price > endPrice - diff * upperThreshold
+                    array.push(pivotsHCopy, lastH)
+                    continue
+                line.delete(lineLastHL)
+                line.delete(lineLastLH)
+                lineLastLH := line.new(prevPivot.tm, prevPivot.price, lastH.tm, lastH.price, color=color.red, width=1, style=line.style_dashed, xloc = xloc.bar_time)
+                lineLastHL := line.new(lastH.tm, lastH.price, lastL.tm, lastL.price, color=color.green, width=1, style=line.style_dashed, xloc = xloc.bar_time)
+                lineLast := lineLastHL
+            break
+    diff = (isHighLast ? -1 : 1) * math.abs(startPrice - endPrice)
+    offset = isHighLast ? line.get_y1(lineLastLH) - line.get_y2(lineLastLH) : line.get_y1(lineLastHL) - line.get_y2(lineLastHL)
+    offset := (isHighLast ? -1 : 1) * math.abs(offset)
+    [endPrice - offset, diff, lineLast]
+
+[endPrice, diff, lineLast] = update()
+
+_draw_line(price, col) =>
+    var id = line.new(time, price, time, price, color=col, width=1, extend=extending, xloc = xloc.bar_time)
+    if not na(lineLast)
+        line.set_xy1(id, line.get_x1(lineLast), price)
+        line.set_xy2(id, line.get_x2(lineLast), price)
+    id
+
+_draw_label(price, txt, txtColor) =>
+    if not na(price)
+        x = labelsPosition == "Left" ? line.get_x1(lineLast) : not extendRight ? line.get_x2(lineLast) : time
+        labelStyle = labelsPosition == "Left" ? label.style_label_right : label.style_label_left
+        align = labelsPosition == "Left" ? text.align_right : text.align_left
+        labelsAlignStrLeft = txt + '\n ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏ \n'
+        labelsAlignStrRight = '       ' + txt + '\n ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏ \n'
+        labelsAlignStr = labelsPosition == "Left" ? labelsAlignStrLeft : labelsAlignStrRight
+        var id = label.new(x=x, y=price, text=labelsAlignStr, textcolor=txtColor, style=labelStyle, textalign=align, color=#00000000, xloc = xloc.bar_time)
+        label.set_xy(id, x, price)
+        label.set_text(id, labelsAlignStr)
+        label.set_textcolor(id, txtColor)
+
+_wrap(txt) =>
+    "(" + str.tostring(txt, format.mintick) + ")"
+
+_label_txt(level, price) =>
+    if not na(price)
+        l = levelsFormat == "Values" ? str.tostring(level) : str.tostring(level * 100) + "%"
+        (levels ? l : "") + (prices ? _wrap(price) : "")
+
+_crossing_level(sr, r) =>
+    (r > sr and r < sr[1]) or (r < sr and r > sr[1])
+
+
+processLevel(show, value, colorL, lineIdOther) =>
+    float m = value
+	r = endPrice + ((reverse ? -1 : 1) * diff * m)
+    if show
+		lineId = _draw_line(r, colorL)
+        _draw_label(r, _label_txt(m, r), colorL)
+        if _crossing_level(close, r)
+            alert("Autofib: " + syminfo.ticker + " crossing level " + str.tostring(value))
+        if not na(lineIdOther)
+            linefill.new(lineId, lineIdOther, color = color.new(colorL, backgroundTransparency))
+		lineId
+    else
+		lineIdOther
+
+
